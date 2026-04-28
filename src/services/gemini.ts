@@ -52,7 +52,7 @@ export const analyzeSourcePhoto = async (base64Data: string): Promise<Partial<Jo
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-2.5-flash",
       contents: {
         parts: [
           { text: prompt },
