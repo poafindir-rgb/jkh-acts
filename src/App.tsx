@@ -51,30 +51,24 @@ export default function App() {
     try {
       const currentJobs = loadJobsFromLocalStorage();
 
-      const jobExists = currentJobs.some((item) => item.id === job.id);
+      const savedJob: Job = {
+        ...job,
+        id: job.id || crypto.randomUUID(),
+      };
+
+      const jobExists = currentJobs.some((item) => item.id === savedJob.id);
 
       const updatedJobs = jobExists
         ? currentJobs.map((item) =>
-            item.id === job.id
-              ? {
-                  ...item,
-                  ...job,
-                }
-              : item
+            item.id === savedJob.id ? savedJob : item
           )
-        : [
-            {
-              ...job,
-              id: job.id || crypto.randomUUID(),
-            },
-            ...currentJobs,
-          ];
+        : [savedJob, ...currentJobs];
 
       saveJobsToLocalStorage(updatedJobs);
 
       setJobs(updatedJobs);
       setIsCreating(false);
-      setSelectedJobId(job.id);
+      setSelectedJobId(savedJob.id);
     } catch (e) {
       console.error(e);
     }
@@ -88,7 +82,6 @@ export default function App() {
       const updatedJobs = currentJobs.filter((job) => job.id !== id);
 
       saveJobsToLocalStorage(updatedJobs);
-
       setJobs(updatedJobs);
 
       if (selectedJobId === id) {
@@ -134,53 +127,49 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-6">
-        {loading ? (
-          <div className="text-center py-20 text-gray-500">Загрузка...</div>
-        ) : (
-          <AnimatePresence mode="wait">
-            {isCreating ? (
-              <motion.div
-                key="creating"
-                initial={{ opacity: 0, y: 16 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -16 }}
-              >
-                <JobForm
-                  onSave={handleSaveJob}
-                  onCancel={() => setIsCreating(false)}
-                />
-              </motion.div>
-            ) : selectedJobId && selectedJob ? (
-              <motion.div
-                key="detail"
-                initial={{ opacity: 0, y: 16 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -16 }}
-              >
-                <JobDetail
-                  job={selectedJob}
-                  onBack={() => setSelectedJobId(null)}
-                  onUpdate={handleSaveJob}
-                  onDelete={() => handleDeleteJob(selectedJob.id)}
-                />
-              </motion.div>
-            ) : (
-              <motion.div
-                key="registry"
-                initial={{ opacity: 0, y: 16 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -16 }}
-              >
-                <JobRegistry
-                  jobs={jobs}
-                  onSelectJob={setSelectedJobId}
-                  onCreateJob={() => setIsCreating(true)}
-                  onDeleteJob={handleDeleteJob}
-                />
-              </motion.div>
-            )}
-          </AnimatePresence>
-        )}
+        <AnimatePresence mode="wait">
+          {isCreating ? (
+            <motion.div
+              key="creating"
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -16 }}
+            >
+              <JobForm
+                onSave={handleSaveJob}
+                onCancel={() => setIsCreating(false)}
+              />
+            </motion.div>
+          ) : selectedJobId && selectedJob ? (
+            <motion.div
+              key="detail"
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -16 }}
+            >
+              <JobDetail
+                job={selectedJob}
+                onBack={() => setSelectedJobId(null)}
+                onUpdate={handleSaveJob}
+                onDelete={() => handleDeleteJob(selectedJob.id)}
+              />
+            </motion.div>
+          ) : (
+            <motion.div
+              key="registry"
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -16 }}
+            >
+              <JobRegistry
+                jobs={jobs}
+                onSelect={setSelectedJobId}
+                onDelete={handleDeleteJob}
+                loading={loading}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
       </main>
     </div>
   );
