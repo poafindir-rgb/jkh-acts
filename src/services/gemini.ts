@@ -1,7 +1,8 @@
+import { GEMINI_API_KEY } from '../config';
 import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
 import { Job, JobStatus, AIResponse, JobCategory } from "../types";
 
-const GEMINI_API_KEY = "AIzaSyA1yKH1RweT4T0lF4O_vacPF9zx0Girq5Q";
+
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
@@ -14,7 +15,7 @@ export const classifyJob = async (text: string): Promise<{ category: JobCategory
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-2.5-flash",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -113,7 +114,7 @@ export const analyzeJobMedia = async (job: Job): Promise<AIResponse> => {
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-2.5-flash",
       contents: {
         parts: [
           { text: prompt },
