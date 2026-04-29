@@ -1,86 +1,122 @@
-import { GEMINI_API_KEY } from '../config';
-import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
-import { Job, JobStatus, AIResponse, JobCategory } from "../types";
+import { Job, AIResponse, JobCategory } from "../types";
 
+const BACKEND_URL = "https://jkh-acts-backend.vercel.app/api/analyze";
 
+async function callOpenAIBackend(prompt: string, imageBase64?: string): Promise<string> {
+  const response = await fetch(BACKEND_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      prompt,
+      imageBase64: imageBase64
+        ? imageBase64.split(",")[1] || imageBase64
+        : undefined,
+      mimeType: "image/png",
+    }),
+  });
 
-const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Backend error:", errorText);
+    throw new Error("Ошибка backend анализа");
+  }
 
-export const classifyJob = async (text: string): Promise<{ category: JobCategory; checklist: string[] }> => {
-  const prompt = `Проанализируй текст заявки на работы в ЖКХ и определи категорию и чек-лист необходимых фото-доказательств.
-  Текст: "${text}"
-  
-  Верни JSON: { "category": "название из списка", "checklist": ["пункт 1", "пункт 2"] }
-  Список категорий: Сантехника, Электрика, Уборка/клининг, Общестрой, Двери/замки, Лифты, Отопление, Вентиляция, Фасад/кровля, Двор/территория, Другое.`;
+  const data = await response.json();
+  return data.text || "";
+}
+
+function parseJsonFromText(text: string): any {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    const match = text.match(/\{[\s\S]*\}/);
+
+    if (!match) {
+      console.error("Не найден JSON в ответе AI:", text);
+      throw error;
+    }
+
+    return JSON.parse(match[0]);
+  }
+}
+
+export const classifyJob = async (
+  text: string
+): Promise<{ category: JobCategory; checklist: string[] }> => {
+  const prompt = `
+Проанализируй текст заявки на работы в ЖКХ и определи категорию и чек-лист необходимых фото-доказательств.
+
+Текст: "${text}"
+
+Верни строго JSON без markdown и без пояснений:
+{
+  "category": "название из списка",
+  "checklist": ["пункт 1", "пункт 2"]
+}
+
+Список категорий:
+Сантехника, Электрика, Уборка/клининг, Общестрой, Двери/замки, Лифты, Отопление, Вентиляция, Фасад/кровля, Двор/территория, Другое.
+`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            category: { type: Type.STRING },
-            checklist: { type: Type.ARRAY, items: { type: Type.STRING } },
-          },
-          required: ["category", "checklist"],
-        },
-      },
-    });
+    const resultText = await callOpenAIBackend(prompt);
+    const data = parseJsonFromText(resultText);
 
-    const data = JSON.parse(response.text || "{}");
     return {
       category: data.category as JobCategory,
       checklist: data.checklist || [],
     };
   } catch (error) {
     console.error("Classification error:", error);
-    return { category: JobCategory.OTHER, checklist: ["Общий план до", "Общий план после"] };
+
+    return {
+      category: JobCategory.OTHER,
+      checklist: ["Общий план до", "Общий план после"],
+    };
   }
 };
 
-export const analyzeSourcePhoto = async (base64Data: string): Promise<Partial<Job>> => {
-  const prompt = `Проанализируй изображение заявки/скриншота/скана на работы в ЖКХ.
-  Извлеки следующие данные:
-  1. Номер заявки (если есть)
-  2. Адрес объекта
-  3. Краткое описание проблемы
-  4. Категория работ (выбери из: Сантехника, Электрика, Уборка/клининг, Общестрой, Двери/замки, Лифты, Отопление, Вентиляция, Фасад/кровля, Двор/территория, Другое)
-  
-  Верни строго JSON: { "externalId": "...", "address": "...", "description": "...", "category": "..." }`;
+export const analyzeSourcePhoto = async (
+  base64Data: string
+): Promise<{
+  externalId: string;
+  address: string;
+  description: string;
+  category: JobCategory;
+}> => {
+  const prompt = `
+Проанализируй изображение заявки, скриншота или скана на работы в ЖКХ.
+
+Извлеки следующие данные:
+1. Номер заявки, если есть.
+2. Адрес объекта.
+3. Краткое описание проблемы.
+4. Категория работ.
+
+Категорию выбери из списка:
+Сантехника, Электрика, Уборка/клининг, Общестрой, Двери/замки, Лифты, Отопление, Вентиляция, Фасад/кровля, Двор/территория, Другое.
+
+Верни строго JSON без markdown и без пояснений:
+{
+  "externalId": "...",
+  "address": "...",
+  "description": "...",
+  "category": "..."
+}
+`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: {
-        parts: [
-          { text: prompt },
-          { inlineData: { mimeType: "image/png", data: base64Data.split(",")[1] || base64Data } },
-        ],
-      },
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            externalId: { type: Type.STRING },
-            address: { type: Type.STRING },
-            description: { type: Type.STRING },
-            category: { type: Type.STRING },
-          },
-          required: ["address", "description", "category"],
-        },
-      },
-    });
+    const resultText = await callOpenAIBackend(prompt, base64Data);
+    const data = parseJsonFromText(resultText);
 
-    const data = JSON.parse(response.text || "{}");
     return {
-      externalId: data.externalId || `REQ-${Math.floor(1000 + Math.random() * 9000)}`,
-      address: data.address,
-      description: data.description,
-      category: data.category as JobCategory,
+      externalId:
+        data.externalId || `REQ-${Math.floor(1000 + Math.random() * 9000)}`,
+      address: data.address || "",
+      description: data.description || "",
+      category: (data.category || JobCategory.OTHER) as JobCategory,
     };
   } catch (error) {
     console.error("Source photo analysis error:", error);
@@ -89,99 +125,75 @@ export const analyzeSourcePhoto = async (base64Data: string): Promise<Partial<Jo
 };
 
 export const analyzeJobMedia = async (job: Job): Promise<AIResponse> => {
-  const beforeParts = job.photosBefore.map((data) => ({
-    inlineData: { mimeType: "image/png", data: data.split(",")[1] || data },
-  }));
-  const afterParts = job.photosAfter.map((data) => ({
-    inlineData: { mimeType: "image/png", data: data.split(",")[1] || data },
-  }));
+  const prompt = `
+Ты — эксперт по техническому надзору в ЖКХ.
 
-  const prompt = `Ты — эксперт по техническому надзору в ЖКХ. Проверь выполнение работ по заявке.
-  Заявка: ${job.description}
-  Категория: ${job.category}
-  Адрес: ${job.address}
-  Исполнитель: ${job.performer}
-  
-  Задание:
-  1. Проверь комплектность (минимум 1 фото ДО и 1 фото ПОСЛЕ).
-  2. Сравни фото ДО и ПОСЛЕ. Опиши изменения.
-  3. Сформируй акт выполненных работ и отчет.
-  4. Если фото некачественные или не относятся к делу — укажи это.
-  5. Верни строго JSON по заданному формату.
-  
-  ВАЖНО: В поле visual_aids ты должен сгенерировать описание для side_by_side сравнения. 
-  Так как ты не можешь рисовать, в image_base64_png просто верни пустую строку, я обработаю это на фронтенде, НО опиши что именно нужно выделить в caption_ru.`;
+Проверь выполнение работ по заявке.
+
+Данные заявки:
+- ID заявки: ${job.id}
+- Описание: ${job.description}
+- Категория: ${job.category}
+- Адрес: ${job.address}
+- Исполнитель: ${job.performer}
+
+Задание:
+1. Проверь комплектность: минимум 1 фото ДО и 1 фото ПОСЛЕ.
+2. Сравни фото ДО и ПОСЛЕ.
+3. Опиши изменения.
+4. Сформируй акт выполненных работ.
+5. Сформируй отчет.
+6. Если фото некачественные или не относятся к делу — укажи это.
+
+Верни строго JSON без markdown и без пояснений в таком формате:
+{
+  "job_id": "${job.id}",
+  "status": "approved / needs_review / rejected",
+  "category_ru": "категория на русском",
+  "confidence": "high / medium / low",
+  "missing_evidence_ru": ["что отсутствует"],
+  "checklist_ru": ["проверка 1", "проверка 2"],
+  "before_after_changes_ru": ["изменение 1", "изменение 2"],
+  "work_summary_ru": "краткое резюме выполненных работ",
+  "materials_ru": [
+    {
+      "name": "материал",
+      "qty": "количество",
+      "unit": "единица"
+    }
+  ],
+  "act_ru": {
+    "title": "Акт выполненных работ",
+    "job_details": ["деталь 1", "деталь 2"],
+    "works_done": ["работа 1", "работа 2"],
+    "dates": ["дата"],
+    "performers": ["исполнитель"],
+    "sign_fields": ["подпись заказчика", "подпись исполнителя"]
+  },
+  "report_ru": {
+    "executive_summary": ["вывод 1", "вывод 2"],
+    "photo_captions": ["подпись к фото 1", "подпись к фото 2"],
+    "quality_notes": ["замечание 1", "замечание 2"]
+  },
+  "visual_aids": [
+    {
+      "type": "side_by_side",
+      "caption_ru": "что нужно визуально сравнить",
+      "image_base64_png": ""
+    }
+  ]
+}
+`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: {
-        parts: [
-          { text: prompt },
-          ...beforeParts,
-          ...afterParts,
-        ],
-      },
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            job_id: { type: Type.STRING },
-            status: { type: Type.STRING },
-            category_ru: { type: Type.STRING },
-            confidence: { type: Type.STRING },
-            missing_evidence_ru: { type: Type.ARRAY, items: { type: Type.STRING } },
-            checklist_ru: { type: Type.ARRAY, items: { type: Type.STRING } },
-            before_after_changes_ru: { type: Type.ARRAY, items: { type: Type.STRING } },
-            work_summary_ru: { type: Type.STRING },
-            materials_ru: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  name: { type: Type.STRING },
-                  qty: { type: Type.STRING },
-                  unit: { type: Type.STRING },
-                },
-              },
-            },
-            act_ru: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING },
-                job_details: { type: Type.ARRAY, items: { type: Type.STRING } },
-                works_done: { type: Type.ARRAY, items: { type: Type.STRING } },
-                dates: { type: Type.ARRAY, items: { type: Type.STRING } },
-                performers: { type: Type.ARRAY, items: { type: Type.STRING } },
-                sign_fields: { type: Type.ARRAY, items: { type: Type.STRING } },
-              },
-            },
-            report_ru: {
-              type: Type.OBJECT,
-              properties: {
-                executive_summary: { type: Type.ARRAY, items: { type: Type.STRING } },
-                photo_captions: { type: Type.ARRAY, items: { type: Type.STRING } },
-                quality_notes: { type: Type.ARRAY, items: { type: Type.STRING } },
-              },
-            },
-            visual_aids: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  type: { type: Type.STRING },
-                  caption_ru: { type: Type.STRING },
-                  image_base64_png: { type: Type.STRING },
-                },
-              },
-            },
-          },
-        },
-      },
-    });
+    const firstBeforePhoto = job.photosBefore?.[0];
+    const firstAfterPhoto = job.photosAfter?.[0];
 
-    const result = JSON.parse(response.text || "{}");
+    const imageForAnalysis = firstAfterPhoto || firstBeforePhoto;
+
+    const resultText = await callOpenAIBackend(prompt, imageForAnalysis);
+    const result = parseJsonFromText(resultText);
+
     return {
       ...result,
       job_id: job.id,
