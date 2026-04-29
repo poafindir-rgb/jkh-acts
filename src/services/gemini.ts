@@ -2,7 +2,21 @@ import { Job, AIResponse, JobCategory } from "../types";
 
 const BACKEND_URL = "https://jkh-acts-backend.vercel.app/api/analyze";
 
-async function callOpenAIBackend(prompt: string, imageBase64?: string): Promise<string> {
+type BackendImage = {
+  label: string;
+  imageBase64: string;
+  mimeType?: string;
+};
+
+function normalizeBase64(data: string): string {
+  if (!data) return "";
+  return data.includes(",") ? data.split(",")[1] : data;
+}
+
+async function callOpenAIBackend(
+  prompt: string,
+  images: BackendImage[] = []
+): Promise<string> {
   const response = await fetch(BACKEND_URL, {
     method: "POST",
     headers: {
@@ -10,10 +24,11 @@ async function callOpenAIBackend(prompt: string, imageBase64?: string): Promise<
     },
     body: JSON.stringify({
       prompt,
-      imageBase64: imageBase64
-        ? imageBase64.split(",")[1] || imageBase64
-        : undefined,
-      mimeType: "image/png",
+      images: images.map((img) => ({
+        label: img.label,
+        imageBase64: normalizeBase64(img.imageBase64),
+        mimeType: img.mimeType || "image/png",
+      })),
     }),
   });
 
@@ -28,13 +43,18 @@ async function callOpenAIBackend(prompt: string, imageBase64?: string): Promise<
 }
 
 function parseJsonFromText(text: string): any {
+  const cleanText = text
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
+
   try {
-    return JSON.parse(text);
+    return JSON.parse(cleanText);
   } catch (error) {
-    const match = text.match(/\{[\s\S]*\}/);
+    const match = cleanText.match(/\{[\s\S]*\}/);
 
     if (!match) {
-      console.error("Не найден JSON в ответе AI:", text);
+      console.error("Не найден JSON в ответе AI:", cleanText);
       throw error;
     }
 
@@ -46,18 +66,21 @@ export const classifyJob = async (
   text: string
 ): Promise<{ category: JobCategory; checklist: string[] }> => {
   const prompt = `
-Проанализируй текст заявки на работы в ЖКХ и определи категорию и чек-лист необходимых фото-доказательств.
+Ты — AI-помощник для управляющей компании.
 
-Текст: "${text}"
+Проанализируй текст заявки на работы в ЖКХ и определи категорию работ и чек-лист необходимых фото-доказательств.
+
+Текст заявки:
+"${text}"
+
+Категорию выбери строго из списка:
+Сантехника, Электрика, Уборка/клининг, Общестрой, Двери/замки, Лифты, Отопление, Вентиляция, Фасад/кровля, Двор/территория, Другое.
 
 Верни строго JSON без markdown и без пояснений:
 {
-  "category": "название из списка",
+  "category": "название категории",
   "checklist": ["пункт 1", "пункт 2"]
 }
-
-Список категорий:
-Сантехника, Электрика, Уборка/клининг, Общестрой, Двери/замки, Лифты, Отопление, Вентиляция, Фасад/кровля, Двор/территория, Другое.
 `;
 
   try {
@@ -65,15 +88,17 @@ export const classifyJob = async (
     const data = parseJsonFromText(resultText);
 
     return {
-      category: data.category as JobCategory,
-      checklist: data.checklist || [],
+      category: (data.category || JobCategory.OTHER) as JobCategory,
+      checklist: Array.isArray(data.checklist)
+        ? data.checklist
+        : ["Фото ДО", "Фото ПОСЛЕ"],
     };
   } catch (error) {
     console.error("Classification error:", error);
 
     return {
       category: JobCategory.OTHER,
-      checklist: ["Общий план до", "Общий план после"],
+      checklist: ["Фото ДО", "Фото ПОСЛЕ"],
     };
   }
 };
@@ -87,28 +112,37 @@ export const analyzeSourcePhoto = async (
   category: JobCategory;
 }> => {
   const prompt = `
-Проанализируй изображение заявки, скриншота или скана на работы в ЖКХ.
+Ты анализируешь изображение заявки, скриншота, документа или фото объекта ЖКХ.
 
-Извлеки следующие данные:
-1. Номер заявки, если есть.
-2. Адрес объекта.
+Извлеки данные:
+1. Номер заявки, если он есть.
+2. Адрес объекта, если он есть.
 3. Краткое описание проблемы.
-4. Категория работ.
+4. Категорию работ.
 
-Категорию выбери из списка:
+Категорию выбери строго из списка:
 Сантехника, Электрика, Уборка/клининг, Общестрой, Двери/замки, Лифты, Отопление, Вентиляция, Фасад/кровля, Двор/территория, Другое.
+
+Если каких-то данных нет на изображении, верни пустую строку.
 
 Верни строго JSON без markdown и без пояснений:
 {
-  "externalId": "...",
-  "address": "...",
-  "description": "...",
-  "category": "..."
+  "externalId": "",
+  "address": "",
+  "description": "",
+  "category": "Другое"
 }
 `;
 
   try {
-    const resultText = await callOpenAIBackend(prompt, base64Data);
+    const resultText = await callOpenAIBackend(prompt, [
+      {
+        label: "Исходное фото заявки / скриншот",
+        imageBase64: base64Data,
+        mimeType: "image/png",
+      },
+    ]);
+
     const data = parseJsonFromText(resultText);
 
     return {
@@ -125,73 +159,109 @@ export const analyzeSourcePhoto = async (
 };
 
 export const analyzeJobMedia = async (job: Job): Promise<AIResponse> => {
-  const prompt = `
-Ты — эксперт по техническому надзору в ЖКХ.
+  const photosBefore = job.photosBefore || [];
+  const photosAfter = job.photosAfter || [];
 
-Проверь выполнение работ по заявке.
+  const images: BackendImage[] = [
+    ...photosBefore.map((img, index) => ({
+      label: `Фото ДО ${index + 1}`,
+      imageBase64: img,
+      mimeType: "image/png",
+    })),
+    ...photosAfter.map((img, index) => ({
+      label: `Фото ПОСЛЕ ${index + 1}`,
+      imageBase64: img,
+      mimeType: "image/png",
+    })),
+  ];
+
+  const prompt = `
+Ты — эксперт технического надзора в ЖКХ.
+
+Твоя задача — проверить выполнение работ по заявке на основании фото ДО и фото ПОСЛЕ.
 
 Данные заявки:
 - ID заявки: ${job.id}
-- Описание: ${job.description}
-- Категория: ${job.category}
-- Адрес: ${job.address}
-- Исполнитель: ${job.performer}
+- Номер заявки: ${job.externalId || job.id}
+- Адрес: ${job.address || "не указан"}
+- Категория: ${job.category || "Другое"}
+- Описание: ${job.description || "не указано"}
+- Исполнитель: ${job.performer || "не указан"}
 
-Задание:
-1. Проверь комплектность: минимум 1 фото ДО и 1 фото ПОСЛЕ.
-2. Сравни фото ДО и ПОСЛЕ.
-3. Опиши изменения.
-4. Сформируй акт выполненных работ.
-5. Сформируй отчет.
-6. Если фото некачественные или не относятся к делу — укажи это.
+Переданные изображения:
+- Сначала идут все изображения с label "Фото ДО".
+- Затем идут все изображения с label "Фото ПОСЛЕ".
 
-Верни строго JSON без markdown и без пояснений в таком формате:
+Количество фото ДО: ${photosBefore.length}
+Количество фото ПОСЛЕ: ${photosAfter.length}
+
+ВАЖНЫЕ ПРАВИЛА:
+1. Если количество фото ДО больше 0, запрещено писать, что "фото ДО отсутствует".
+2. Если количество фото ПОСЛЕ больше 0, запрещено писать, что "фото ПОСЛЕ отсутствует".
+3. Если фото ДО и фото ПОСЛЕ сделаны в разных местах, с разных участков или невозможно уверенно подтвердить, что это один и тот же участок, верни status: "needs_review".
+4. Не утверждай автоматически, что работы выполнены, если ракурс, геометрия помещения, окно, лестница, стены, перила или другие ключевые признаки не совпадают.
+5. Если место совпадает и видны улучшения, укажи конкретные изменения.
+6. Если доказательств недостаточно, укажи, каких фото не хватает.
+7. Не придумывай материалы, даты или работы, которых не видно и нет в описании.
+8. Ответ должен быть строго JSON без markdown и без пояснений.
+
+Верни строго такой JSON:
 {
   "job_id": "${job.id}",
   "status": "approved / needs_review / rejected",
   "category_ru": "категория на русском",
   "confidence": "high / medium / low",
-  "missing_evidence_ru": ["что отсутствует"],
-  "checklist_ru": ["проверка 1", "проверка 2"],
-  "before_after_changes_ru": ["изменение 1", "изменение 2"],
-  "work_summary_ru": "краткое резюме выполненных работ",
+  "missing_evidence_ru": [],
+  "checklist_ru": [],
+  "before_after_changes_ru": [],
+  "work_summary_ru": "",
   "materials_ru": [
     {
-      "name": "материал",
-      "qty": "количество",
-      "unit": "единица"
+      "name": "",
+      "qty": "",
+      "unit": ""
     }
   ],
   "act_ru": {
     "title": "Акт выполненных работ",
-    "job_details": ["деталь 1", "деталь 2"],
-    "works_done": ["работа 1", "работа 2"],
-    "dates": ["дата"],
-    "performers": ["исполнитель"],
-    "sign_fields": ["подпись заказчика", "подпись исполнителя"]
+    "job_details": [],
+    "works_done": [],
+    "dates": [],
+    "performers": [],
+    "sign_fields": ["Подпись заказчика", "Подпись исполнителя"]
   },
   "report_ru": {
-    "executive_summary": ["вывод 1", "вывод 2"],
-    "photo_captions": ["подпись к фото 1", "подпись к фото 2"],
-    "quality_notes": ["замечание 1", "замечание 2"]
+    "executive_summary": [],
+    "photo_captions": [],
+    "quality_notes": []
   },
   "visual_aids": [
     {
       "type": "side_by_side",
-      "caption_ru": "что нужно визуально сравнить",
+      "caption_ru": "",
       "image_base64_png": ""
     }
   ]
 }
+
+Логика статусов:
+- approved — фото ДО и ПОСЛЕ относятся к одному месту, работа видимо выполнена, доказательств достаточно.
+- needs_review — фото есть, но есть сомнения: разные ракурсы, неочевидно совпадение места, мало доказательств, качество фото слабое.
+- rejected — работа явно не выполнена или фото не относятся к заявке.
+
+Если фото ДО и фото ПОСЛЕ визуально похожи на разные места, верни:
+status: "needs_review"
+confidence: "low"
+и в missing_evidence_ru укажи:
+"Необходимо дополнительное фото ДО/ПОСЛЕ с одинакового ракурса для подтверждения выполнения работ".
 `;
 
   try {
-    const firstBeforePhoto = job.photosBefore?.[0];
-    const firstAfterPhoto = job.photosAfter?.[0];
+    if (images.length === 0) {
+      throw new Error("Нет фото для анализа");
+    }
 
-    const imageForAnalysis = firstAfterPhoto || firstBeforePhoto;
-
-    const resultText = await callOpenAIBackend(prompt, imageForAnalysis);
+    const resultText = await callOpenAIBackend(prompt, images);
     const result = parseJsonFromText(resultText);
 
     return {
